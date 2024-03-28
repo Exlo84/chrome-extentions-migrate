@@ -51,9 +51,8 @@ If your Chrome installation directories differ from the defaults, or if you wish
 Add or remove directories as needed, ensuring they are relative to the Chrome user data directory.
 
 MetaMask
-
-To successfully copy MetaMask, with wallets and networks, you have to uninstall on Linux first, run the script, and then install MetaMask again
 -------------
+To successfully copy MetaMask, with wallets and networks, you have to uninstall on Linux first, run the script, and then install MetaMask again
 
 Contributing
 ------------
