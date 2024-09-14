@@ -1,32 +1,48 @@
 @echo off
-setlocal
+setlocal EnableDelayedExpansion
 
 :: Set paths for Chrome User Data and the backup location
 set "chrome_profile=%LOCALAPPDATA%\Google\Chrome\User Data"
 set "backup_dir=%~dp0backup"
+set "temp_dir=%backup_dir%\temp"
 set "zip_file=chrome_backup.zip"
 
-:: Create backup directory if it doesn't exist
+:: Create backup and temp directories if they don't exist
 if not exist "%backup_dir%" mkdir "%backup_dir%"
+if not exist "%temp_dir%" mkdir "%temp_dir%"
 
-:: Copy the entire Chrome user data folder, including Local State
-echo Copying Chrome profile to backup location...
-xcopy "%chrome_profile%" "%backup_dir%\User Data" /E /I /H /Y
+:: Close Chrome if it's running
+taskkill /F /IM chrome.exe 2>NUL
 
-:: Also copy the Local State file
-xcopy "%chrome_profile%\..\Local State" "%backup_dir%\Local State" /H /Y
+:: Copy the entire Chrome user data folder, including Local State and extensions
+echo Copying Chrome profile to temporary location...
+xcopy "%chrome_profile%" "%temp_dir%\User Data" /E /I /H /Y /C /R /Q
 
-:: Navigate to the backup directory
-cd /d "%backup_dir%"
+:: Navigate to the temp directory
+cd /d "%temp_dir%"
 
-:: Create a zip file of the copied Chrome profile (Note the quotes around paths with spaces)
+:: Remove existing zip file if it exists
+if exist "%backup_dir%\%zip_file%" del "%backup_dir%\%zip_file%"
+
+:: Create a zip file of the copied Chrome profile
 echo Creating zip file...
-powershell Compress-Archive -Path '"User Data"' -DestinationPath "%zip_file%" -Force
+powershell -Command "& { Add-Type -A 'System.IO.Compression.FileSystem'; [IO.Compression.ZipFile]::CreateFromDirectory('%temp_dir%\User Data', '%backup_dir%\%zip_file%'); }"
 
-:: Clean up the copied files after zipping (optional)
-rmdir /S /Q "User Data"
+:: Check if zip file was created successfully
+if exist "%backup_dir%\%zip_file%" (
+    echo Backup completed. Zip file saved at: %backup_dir%\%zip_file%
+    
+    :: Calculate and display the size of the backup
+    for %%I in ("%backup_dir%\%zip_file%") do set "size=%%~zI"
+    set /a size_mb=%size% / 1048576
+    echo Backup size: %size_mb% MB
+) else (
+    echo Failed to create zip file. Please check for errors.
+)
 
-echo Backup completed. Zip file saved at: %backup_dir%\%zip_file%
+:: Clean up the temporary directory
+cd /d "%backup_dir%"
+rmdir /S /Q "%temp_dir%"
 
 pause
 endlocal

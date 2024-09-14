@@ -17,24 +17,26 @@ if ! command -v unzip &> /dev/null; then
   exit 1
 fi
 
-# Create the Chrome profile directory if it doesn't exist
-if [ ! -d "$CHROME_PROFILE" ]; then
-  mkdir -p "$CHROME_PROFILE"
-fi
+# Close Chrome if it's running
+pkill chrome
 
-# Unzip the backup to the Chrome profile directory (quote paths to handle spaces)
+# Backup the current Chrome profile
+BACKUP_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+mv "$CHROME_PROFILE" "${CHROME_PROFILE}_backup_${BACKUP_TIMESTAMP}"
+
+# Create the Chrome profile directory if it doesn't exist
+mkdir -p "$CHROME_PROFILE"
+
+# Unzip the backup to the Chrome profile directory
 echo "Restoring Chrome profile..."
 unzip -o "$ZIP_FILE" -d "$CHROME_PROFILE"
 
-# Restore Local State file
-if [ -f "$BACKUP_DIR/Local State" ]; then
-  cp "$BACKUP_DIR/Local State" "$CHROME_PROFILE/../Local State"
-fi
-
 # Check if unzip was successful
 if [ $? -eq 0 ]; then
-  echo "Restore completed successfully."
+  echo "Restore completed successfully. You can now start Chrome."
 else
   echo "Error: Failed to restore the Chrome profile."
+  mv "${CHROME_PROFILE}_backup_${BACKUP_TIMESTAMP}" "$CHROME_PROFILE"
+  echo "Reverted to the previous profile."
   exit 1
 fi
