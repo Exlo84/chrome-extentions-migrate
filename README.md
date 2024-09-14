@@ -87,7 +87,3 @@ If you encounter any issues:
 ## Contributing
 
 Contributions to improve these scripts are welcome! Please feel free to submit issues or pull requests on GitHub.
-
-## License
-
-These scripts are released under the MIT License. See the LICENSE file for more details.
