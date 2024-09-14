@@ -15,8 +15,9 @@ if not exist "%backup_dir%\%zip_file%" (
 
 :: Unzip the backup
 echo Restoring Chrome profile...
-powershell Expand-Archive -Path "%backup_dir%\%zip_file%" -DestinationPath "%chrome_profile%" -Force
+powershell Expand-Archive -Path "%backup_dir%\%zip_file%" -DestinationPath '"%chrome_profile%"' -Force
 
 echo Restore completed.
 pause
 endlocal
+
