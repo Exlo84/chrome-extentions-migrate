@@ -13,11 +13,13 @@ if not exist "%backup_dir%\%zip_file%" (
     exit /b 1
 )
 
-:: Unzip the backup
+:: Unzip the backup (Note the quotes around paths with spaces)
 echo Restoring Chrome profile...
 powershell Expand-Archive -Path "%backup_dir%\%zip_file%" -DestinationPath '"%chrome_profile%"' -Force
+
+:: Restore Local State file
+xcopy "%backup_dir%\Local State" "%chrome_profile%\..\Local State" /H /Y
 
 echo Restore completed.
 pause
 endlocal
-

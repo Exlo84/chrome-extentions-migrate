@@ -22,9 +22,14 @@ if [ ! -d "$CHROME_PROFILE" ]; then
   mkdir -p "$CHROME_PROFILE"
 fi
 
-# Unzip the backup to the Chrome profile directory
+# Unzip the backup to the Chrome profile directory (quote paths to handle spaces)
 echo "Restoring Chrome profile..."
 unzip -o "$ZIP_FILE" -d "$CHROME_PROFILE"
+
+# Restore Local State file
+if [ -f "$BACKUP_DIR/Local State" ]; then
+  cp "$BACKUP_DIR/Local State" "$CHROME_PROFILE/../Local State"
+fi
 
 # Check if unzip was successful
 if [ $? -eq 0 ]; then

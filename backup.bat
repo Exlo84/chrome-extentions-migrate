@@ -9,9 +9,12 @@ set "zip_file=chrome_backup.zip"
 :: Create backup directory if it doesn't exist
 if not exist "%backup_dir%" mkdir "%backup_dir%"
 
-:: Copy the entire Chrome user data folder to the backup directory
+:: Copy the entire Chrome user data folder, including Local State
 echo Copying Chrome profile to backup location...
 xcopy "%chrome_profile%" "%backup_dir%\User Data" /E /I /H /Y
+
+:: Also copy the Local State file
+xcopy "%chrome_profile%\..\Local State" "%backup_dir%\Local State" /H /Y
 
 :: Navigate to the backup directory
 cd /d "%backup_dir%"
