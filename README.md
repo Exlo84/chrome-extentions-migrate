@@ -31,8 +31,8 @@ Getting Started
 -   **Windows**: PowerShell 5.0 or later (comes pre-installed on Windows 10).
 -   **Ubuntu**: `unzip` should be installed for restoration scripts. Install using:
 
-    bash
-    `sudo apt-get install unzip`
+  
+    ```sudo apt-get install unzip```
 
 * * * * *
 
@@ -46,7 +46,6 @@ Backup Instructions
     -   The script will back up your entire Chrome profile, including extensions, to a `backup` folder in the same directory.
     -   A `chrome_backup.zip` file will be created in the `backup` folder.
 
-bash
 `backup_extensions.bat`
 
 ### Windows (Backup Chrome Session Data Only)
