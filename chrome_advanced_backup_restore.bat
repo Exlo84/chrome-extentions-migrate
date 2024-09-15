@@ -133,12 +133,12 @@ exit /b
 
 :zip_folder
 echo Zipping folder...
-tar -cf "%~2" -C "%~1" . >> "%log_file%" 2>&1
+powershell -command "Compress-Archive -Path '%~1\*' -DestinationPath '%~2' -Force" >> "%log_file%" 2>&1
 exit /b
 
 :unzip_folder
 echo Unzipping folder...
-tar -xf "%~1" -C "%~2" >> "%log_file%" 2>&1
+powershell -command "Expand-Archive -Path '%~1' -DestinationPath '%~2' -Force" >> "%log_file%" 2>&1
 exit /b
 
 :zip_session_data
@@ -153,10 +153,10 @@ exit /b
 :copy_session_data
 echo Copying session data...
 set "dest=%~1"
-for %%F in (Cookies "Login Data" "Login Data-journal" Preferences "Web Data" "Web Data-journal" "Sync Data" "History" "History-journal" "Favicons" "Favicons-journal" "Shortcuts" "Shortcuts-journal" "Top Sites" "Visited Links" "Network Action Predictor") do (
+for %%F in (Cookies "Login Data" "Login Data-journal" Preferences "Web Data" "Web Data-journal" "Sync Data" History "History-journal" Favicons "Favicons-journal" Shortcuts "Shortcuts-journal" "Top Sites" "Visited Links" "Network Action Predictor" Bookmarks "Bookmarks-journal") do (
     xcopy "%chrome_profile%\Default\%%F" "%dest%\Default\" /H /Y >> "%log_file%" 2>&1
 )
-for %%D in ("Local Storage" "Session Storage" Sessions "Extension State" IndexedDB Extensions "Local Extension Settings" "Sync Extension Settings" "Service Worker" "shared_proto_db" "IndexedDB" "GPUCache" "Code Cache" "Cache") do (
+for %%D in ("Local Storage" "Session Storage" Sessions "Extension State" IndexedDB Extensions "Local Extension Settings" "Sync Extension Settings" "Service Worker" "shared_proto_db" "GPUCache" "Code Cache" Cache) do (
     xcopy "%chrome_profile%\Default\%%D" "%dest%\Default\%%D\" /E /H /C /I /Y >> "%log_file%" 2>&1
 )
 xcopy "%chrome_profile%\Local State" "%dest%\" /H /Y >> "%log_file%" 2>&1

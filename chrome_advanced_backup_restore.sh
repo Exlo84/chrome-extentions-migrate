@@ -41,7 +41,7 @@ backup_menu() {
 
     clear
     echo "Choose backup method:"
-    echo "1. Quick (direct tar)"
+    echo "1. Quick (direct zip)"
     echo "2. Safe (copy to temp folder first)"
     read -p "Enter your choice (1-2): " backup_method
 
@@ -64,9 +64,9 @@ quick_backup() {
     echo "$(date) - Quick $backup_name backup started" >> "$log_file"
     close_chrome
     if [ "$backup_name" == "Full" ]; then
-        tar_folder "$chrome_profile" "$zip_file"
+        zip_folder "$chrome_profile" "$zip_file"
     else
-        tar_session_data
+        zip_session_data
     fi
     echo "$(date) - Quick $backup_name backup completed" >> "$log_file"
     echo "Backup completed. Press any key to return to menu."
@@ -83,7 +83,7 @@ safe_backup() {
     else
         copy_session_data "$temp_dir"
     fi
-    tar_folder "$temp_dir" "$zip_file"
+    zip_folder "$temp_dir" "$zip_file"
     rm -rf "$temp_dir"
     echo "$(date) - Safe $backup_name backup completed" >> "$log_file"
     echo "Backup completed. Press any key to return to menu."
@@ -120,10 +120,14 @@ restore() {
     if [ "$restore_name" == "Full" ]; then
         rm -rf "$chrome_profile"
         mkdir -p "$chrome_profile"
-        untar_folder "$zip_file" "$chrome_profile"
+        unzip_folder "$zip_file" "$chrome_profile"
     else
-        untar_session_data
+        unzip_session_data
     fi
+    # Fix permissions after restore
+    chown -R $USER:$USER "$chrome_profile"
+    find "$chrome_profile" -type d -exec chmod 700 {} +
+    find "$chrome_profile" -type f -exec chmod 600 {} +
     echo "$(date) - $restore_name restore completed" >> "$log_file"
     echo "Restore completed. Press any key to return to menu."
     read -n 1 -s
@@ -135,22 +139,22 @@ close_chrome() {
     sleep 2
 }
 
-tar_folder() {
-    echo "Compressing folder..."
-    tar -czf "$2" -C "$1" . >> "$log_file" 2>&1
+zip_folder() {
+    echo "Zipping folder..."
+    zip -r "$2" "$1" >> "$log_file" 2>&1
 }
 
-untar_folder() {
-    echo "Extracting folder..."
-    tar -xzf "$1" -C "$2" >> "$log_file" 2>&1
+unzip_folder() {
+    echo "Unzipping folder..."
+    unzip -o "$1" -d "$2" >> "$log_file" 2>&1
 }
 
-tar_session_data() {
-    echo "Compressing session data..."
+zip_session_data() {
+    echo "Zipping session data..."
     rm -rf "$temp_dir"
     mkdir -p "$temp_dir"
     copy_session_data "$temp_dir"
-    tar_folder "$temp_dir" "$zip_file"
+    zip_folder "$temp_dir" "$zip_file"
     rm -rf "$temp_dir"
 }
 
@@ -161,6 +165,7 @@ copy_session_data() {
         "Cookies" "Login Data" "Login Data-journal" "Preferences" "Web Data" "Web Data-journal"
         "Sync Data" "History" "History-journal" "Favicons" "Favicons-journal" "Shortcuts"
         "Shortcuts-journal" "Top Sites" "Visited Links" "Network Action Predictor"
+        "Bookmarks" "Bookmarks-journal"
     )
     for file in "${files[@]}"; do
         cp -a "$chrome_profile/Default/$file" "$dest/Default/" 2>/dev/null
@@ -179,11 +184,11 @@ copy_session_data() {
     cp -a "$chrome_profile/Network" "$dest/" 2>/dev/null
 }
 
-untar_session_data() {
-    echo "Extracting session data..."
+unzip_session_data() {
+    echo "Unzipping session data..."
     rm -rf "$temp_dir"
     mkdir -p "$temp_dir"
-    untar_folder "$zip_file" "$temp_dir"
+    unzip_folder "$zip_file" "$temp_dir"
     close_chrome
     cp -a "$temp_dir/Default/." "$chrome_profile/Default/" 2>/dev/null
     cp -a "$temp_dir/Local State" "$chrome_profile/" 2>/dev/null
