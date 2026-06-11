@@ -414,212 +414,25 @@ invoke_cookie_migration() {
     local json_path="$3"
 
     write_info "Automatic Cookie $mode for Profile: $profile_name..."
-    local ext_dir="$script_dir/cookie_migration_ext"
-    mkdir -p "$ext_dir"
 
-    # Write manifest.json
-    cat <<EOF > "$ext_dir/manifest.json"
-{
-  "manifest_version": 3,
-  "name": "Chrome Cookie Migrator",
-  "version": "1.0",
-  "permissions": ["cookies"],
-  "host_permissions": ["<all_urls>", "http://localhost:9999/*"],
-  "background": {
-    "service_worker": "background.js"
-  }
-}
-EOF
-
-    # Write background.js
-    cat <<'EOF' > "$ext_dir/background.js"
-const PORT = 9999;
-const URL_PREFIX = `http://localhost:${PORT}`;
-
-function getCookieUrl(cookie) {
-  let domain = cookie.domain;
-  if (domain.startsWith('.')) {
-    domain = domain.substring(1);
-  }
-  const protocol = cookie.secure ? 'https://' : 'http://';
-  return protocol + domain + cookie.path;
-}
-
-fetch(`${URL_PREFIX}/mode`)
-  .then(r => r.json())
-  .then(data => {
-    if (data.mode === 'EXPORT') {
-      chrome.cookies.getAll({}, (cookies) => {
-        fetch(`${URL_PREFIX}/export`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(cookies)
-        });
-      });
-    } else if (data.mode === 'IMPORT') {
-      fetch(`${URL_PREFIX}/import`)
-        .then(r => r.json())
-        .then(cookies => {
-          if (!cookies || cookies.length === 0) {
-            fetch(`${URL_PREFIX}/done`, { method: 'POST' });
-            return;
-          }
-          let count = cookies.length;
-          let done = 0;
-          cookies.forEach(cookie => {
-            const details = {
-              url: getCookieUrl(cookie),
-              name: cookie.name,
-              value: cookie.value,
-              path: cookie.path,
-              secure: cookie.secure,
-              httpOnly: cookie.httpOnly,
-              expirationDate: cookie.expirationDate
-            };
-            if (cookie.domain && cookie.domain.startsWith('.')) {
-              details.domain = cookie.domain;
-            }
-            if (cookie.expirationDate && cookie.expirationDate < Date.now() / 1000) {
-              done++;
-              if (done === count) {
-                fetch(`${URL_PREFIX}/done`, { method: 'POST' });
-              }
-              return;
-            }
-            chrome.cookies.set(details, () => {
-              done++;
-              if (done === count) {
-                fetch(`${URL_PREFIX}/done`, { method: 'POST' });
-              }
-            });
-          });
-        })
-        .catch(err => {
-          fetch(`${URL_PREFIX}/done`, { method: 'POST' });
-        });
-    }
-  })
-  .catch(err => {
-    setTimeout(() => {
-      location.reload();
-    }, 1000);
-  });
-EOF
-
-    # Start python HTTP sync server in the background
-    python3 -c '
-import os, json, sys
-from http.server import HTTPServer, BaseHTTPRequestHandler
-
-mode = sys.argv[1]
-json_path = sys.argv[2]
-
-class SyncHandler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass
-
-    def do_GET(self):
-        if self.path == "/mode":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"mode": mode}).encode("utf-8"))
-        elif self.path == "/import" and mode == "IMPORT":
-            cookies = []
-            if os.path.exists(json_path):
-                try:
-                    with open(json_path, "r", encoding="utf-8") as f:
-                        cookies = json.load(f)
-                except:
-                    pass
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps(cookies).encode("utf-8"))
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def do_POST(self):
-        if self.path == "/export" and mode == "EXPORT":
-            content_length = int(self.headers["Content-Length"])
-            post_data = self.rfile.read(content_length)
-            try:
-                json.loads(post_data.decode("utf-8"))
-                with open(json_path, "w", encoding="utf-8") as f:
-                    f.write(post_data.decode("utf-8"))
-                global sync_success
-                sync_success = True
-            except Exception as e:
-                pass
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"OK")
-        elif self.path == "/done":
-            global sync_success
-            sync_success = True
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"OK")
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-sync_success = False
-httpd = HTTPServer(("localhost", 9999), SyncHandler)
-httpd.timeout = 15
-import time
-start_time = time.time()
-while time.time() - start_time < 15 and not sync_success:
-    httpd.handle_request()
-
-if sync_success:
-    sys.exit(0)
-else:
-    sys.exit(1)
-' "$mode" "$json_path" &
-    local listener_pid=$!
-
-    # Find Google Chrome binary
-    local chrome_bin=""
-    if command -v google-chrome &>/dev/null; then
-        chrome_bin="google-chrome"
-    elif command -v google-chrome-stable &>/dev/null; then
-        chrome_bin="google-chrome-stable"
-    elif [ -f "/opt/google/chrome/chrome" ]; then
-        chrome_bin="/opt/google/chrome/chrome"
-    fi
-
-    if [ -z "$chrome_bin" ]; then
-        write_err "Chrome binary not found! Cannot automatically sync cookies."
-        kill $listener_pid 2>/dev/null
+    if ! command -v python3 &>/dev/null; then
+        write_err "Python3 is not installed. Skipping cookie sync."
         return 1
     fi
 
-    # Launch headless Chrome with the extension
-    $chrome_bin --load-extension="$ext_dir" \
-                --user-data-dir="$chrome_profile" \
-                --profile-directory="$profile_name" \
-                --headless=new \
-                --disable-gpu \
-                --no-first-run \
-                --no-default-browser-check &>/dev/null &
-    local chrome_pid=$!
+    if [ ! -f "$script_dir/cookie_sync.py" ]; then
+        write_err "cookie_sync.py helper script not found in $script_dir."
+        return 1
+    fi
 
-    # Wait for completion
-    wait $listener_pid
+    python3 "$script_dir/cookie_sync.py" "$mode" "$chrome_profile" "$profile_name" "$json_path"
     local sync_status=$?
-
-    # Shutdown processes
-    kill $chrome_pid 2>/dev/null
-    sleep 0.5
-    rm -rf "$ext_dir"
 
     if [ $sync_status -eq 0 ]; then
         write_ok "Automatic cookie sync successful for $profile_name."
         return 0
     else
-        write_info "Automatic cookie sync timed out for $profile_name (Chrome may be locked)."
+        write_err "Automatic cookie sync failed for $profile_name."
         return 1
     fi
 }
