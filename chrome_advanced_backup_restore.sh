@@ -17,6 +17,14 @@ echo "$(date) - Script started" > "$log_file"
 main_menu() {
     while true; do
         clear
+        echo "======================================================================="
+        echo " WARNING: Migrating to a NEW OS installation or different user?"
+        echo " Chrome passwords and cookies are encrypted using OS-level DPAPI/ABE."
+        echo " Direct backup/restore WILL NOT keep you logged in on a new OS."
+        echo " Please export cookies (via extension) and passwords (via Chrome settings)"
+        echo " manually BEFORE reinstalling/migrating to avoid losing account access!"
+        echo "======================================================================="
+        echo
         echo "Choose an option:"
         echo "1. Backup Chrome data"
         echo "2. Restore Chrome data"
@@ -162,26 +170,27 @@ copy_session_data() {
     echo "Copying session data..."
     dest="$1"
     files=(
-        "Cookies" "Login Data" "Login Data-journal" "Preferences" "Web Data" "Web Data-journal"
+        "Login Data" "Login Data-journal" "Preferences" "Web Data" "Web Data-journal"
         "Sync Data" "History" "History-journal" "Favicons" "Favicons-journal" "Shortcuts"
         "Shortcuts-journal" "Top Sites" "Visited Links" "Network Action Predictor"
         "Bookmarks" "Bookmarks-journal"
     )
     for file in "${files[@]}"; do
+        mkdir -p "$dest/Default"
         cp -a "$chrome_profile/Default/$file" "$dest/Default/" 2>/dev/null
     done
     
     directories=(
         "Local Storage" "Session Storage" "Sessions" "Extension State" "IndexedDB" "Extensions"
         "Local Extension Settings" "Sync Extension Settings" "Service Worker" "shared_proto_db"
-        "GPUCache" "Code Cache" "Cache"
+        "Network"
     )
     for dir in "${directories[@]}"; do
+        mkdir -p "$dest/Default"
         cp -a "$chrome_profile/Default/$dir" "$dest/Default/" 2>/dev/null
     done
     
     cp -a "$chrome_profile/Local State" "$dest/" 2>/dev/null
-    cp -a "$chrome_profile/Network" "$dest/" 2>/dev/null
 }
 
 unzip_session_data() {
@@ -192,7 +201,6 @@ unzip_session_data() {
     close_chrome
     cp -a "$temp_dir/Default/." "$chrome_profile/Default/" 2>/dev/null
     cp -a "$temp_dir/Local State" "$chrome_profile/" 2>/dev/null
-    cp -a "$temp_dir/Network" "$chrome_profile/" 2>/dev/null
     rm -rf "$temp_dir"
 }
 

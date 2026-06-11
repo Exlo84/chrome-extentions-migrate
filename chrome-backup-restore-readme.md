@@ -75,6 +75,28 @@ To restore your Chrome data:
 
 The backup files created by both the Windows and Ubuntu scripts are compatible with each other. This means you can create a backup on Windows and restore it on Ubuntu, or vice versa. Both scripts use zip format for backups to ensure this compatibility.
 
+## Important: Windows Reinstallation and System Migration Limits
+
+Because of Windows security features—specifically **DPAPI (Data Protection API)** and **App-Bound Encryption (introduced in Chrome 127)**—Chrome encrypts sensitive user data (including saved passwords and session cookies) using cryptographic keys tied to the specific Windows user profile security identifier (SID) and installation.
+
+If you reinstall Windows, migrate to a different computer, or move data to a different Windows user account:
+* **Chrome will NOT be able to decrypt the restored passwords or cookies**, even if you restore the backup files. Chrome on the new installation will discard the old keys, generate new ones, and you will be logged out of all websites (requiring 2FA again).
+* **Extensions (like Metamask) WILL migrate successfully.** Metamask encrypts its database using your Metamask-specific password, rather than Windows DPAPI. By restoring the backup, Metamask will detect your vault and ask for your password to unlock all accounts/addresses.
+
+### How to safely migrate sessions (cookies) and passwords:
+To prevent losing access to accounts that require 2FA (especially if you lost your 2FA device):
+
+1. **Active Sessions (Cookies):**
+   - Before reinstalling, install a cookie export extension (e.g., **Cookie-Editor** or **EditThisCookie**) from the Chrome Web Store.
+   - Use the extension to export all cookies (or cookies for critical accounts) to a JSON file and save it securely.
+   - After reinstalling Windows and restoring the Chrome profile, install the same extension and import the JSON file. Chrome will write them into the database and encrypt them using the new Windows keys.
+2. **Passwords:**
+   - Go to `chrome://password-manager/settings` in your old Chrome.
+   - Click "Export passwords" and save the `.csv` file.
+   - On the new system, import the `.csv` file into Chrome's Password Manager.
+3. **2FA Backup:**
+   - **CRITICAL:** While you are still logged into your accounts on the old system, go to their security settings and generate new 2FA setup codes, download backup recovery codes, or set up your new phone. **Do not format your computer until you have done this.**
+
 ## Important Notes
 
 - Always close Chrome before starting a backup or restore operation. The scripts attempt to close Chrome automatically, but it's best to ensure it's not running before you start.
