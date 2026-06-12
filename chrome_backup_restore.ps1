@@ -29,6 +29,7 @@ $Script:LogFile        = Join-Path $BackupDir "chrome_backup.log"
 $Script:TempDir        = Join-Path $BackupDir "_temp_working"
 $Script:ChromeUserData = Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data"
 $Script:ChromeDefault  = Join-Path $Script:ChromeUserData "Default"
+$Script:AutoAcceptAll  = $false
 
 # Session-only files to include (individual files in Default\)
 $Script:SessionFiles = @(
@@ -92,6 +93,24 @@ function Write-OK    { param([string]$m) Write-Color "  [OK] $m" Green }
 function Write-Warn  { param([string]$m) Write-Color "  [i]  $m" Cyan }
 function Write-Err   { param([string]$m) Write-Color "  [X]  $m" Red }
 function Write-Info  { param([string]$m) Write-Color "  [i]  $m" Cyan }
+
+function Get-Response {
+    param(
+        [string]$PromptMessage,
+        [string]$DefaultVal = "YES"
+    )
+    if ($Script:AutoAcceptAll) {
+        Write-Color "  $PromptMessage -> Auto-accepted: $DefaultVal" DarkGray
+        return $DefaultVal
+    }
+    $res = Read-Host "  $PromptMessage"
+    if ($null -eq $res) { return "" }
+    $res = $res.Trim()
+    if ($res -eq "") {
+        return $DefaultVal
+    }
+    return $res.ToUpper()
+}
 
 # --- LOGGING ------------------------------------------------------------------
 function Write-Log {
@@ -446,7 +465,15 @@ function Expand-WithProgress {
             } else {
                 $isRootFile = -not $entry.FullName.Contains('/')
                 if ($isRootFile) {
-                    $shouldExtract = $true
+                    # SECURITY: Never overwrite 'Local State' during a profile-specific restore.
+                    # Local State contains the App-Bound Encryption key (tied to the source OS/machine).
+                    # Overwriting it would break cookie decryption for ALL profiles on this machine.
+                    $safeToInclude = $entry.FullName -notin @('Local State', 'Local State-journal')
+                    if ($safeToInclude) {
+                        $shouldExtract = $true
+                    } else {
+                        Write-Log "SKIP: Root file '$($entry.FullName)' excluded from profile-specific restore (OS-specific encryption key)" "INFO"
+                    }
                 } else {
                     $parts = $entry.FullName -split '/'
                     $firstFolder = $parts[0]
@@ -769,7 +796,75 @@ function Select-BackupFile {
     }
 }
 
+function Invoke-CookieMigrationDirect {
+    <#
+    .SYNOPSIS
+        Fast cookie EXPORT via direct SQLite read using cookie_sync.py.
+        EXPORT only: reads & decrypts cookies from the live SQLite database.
+        IMPORT is NOT done via Python on Windows because Chrome 127+ uses v20
+        App-Bound Encryption which cookie_sync.py cannot replicate — IMPORT
+        must go through the Chrome extension path instead.
+    #>
+    param(
+        [string]$Mode,        # 'EXPORT' or 'IMPORT'
+        [string]$ProfileName,
+        [string]$JsonPath
+    )
+
+    # On Windows, Python IMPORT writes v11 AES-CBC which Chrome 127+ cannot read.
+    # Only allow Python for EXPORT.
+    if ($Mode -eq 'IMPORT') { return $null }
+
+    # Locate Python executable (py launcher preferred on Windows, then python/python3)
+    $pythonExe = $null
+    foreach ($candidate in @("py", "python", "python3")) {
+        try {
+            $null = & $candidate --version 2>&1
+            if ($LASTEXITCODE -eq 0) { $pythonExe = $candidate; break }
+        } catch {}
+    }
+    if (-not $pythonExe) { return $null }  # Signal: Python not available
+
+    $scriptPath = Join-Path $Script:ScriptDir "cookie_sync.py"
+    if (-not (Test-Path $scriptPath)) {
+        Write-Info "cookie_sync.py not found alongside the script. Skipping direct method."
+        return $null
+    }
+
+    # Verify required Python package
+    try {
+        $null = & $pythonExe -c "import cryptography" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Info "Python 'cryptography' package not installed. Run: pip install cryptography"
+            Write-Info "Falling back to Chrome extension method..."
+            return $null
+        }
+    } catch { return $null }
+
+    Write-Info "Using direct SQLite method (cookie_sync.py) for EXPORT from $ProfileName..."
+    try {
+        $output = & $pythonExe $scriptPath $Mode $Script:ChromeUserData $ProfileName $JsonPath 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-OK "Direct cookie EXPORT successful for ${ProfileName}: $output"
+            return $true
+        } else {
+            Write-Info "cookie_sync.py reported an error: $output"
+            return $false
+        }
+    } catch {
+        Write-Info "cookie_sync.py execution failed: $_"
+        return $false
+    }
+}
+
 function Invoke-CookieMigration {
+    <#
+    .SYNOPSIS
+        Cookie migration with dual-path strategy:
+          1. PRIMARY:  cookie_sync.py  - direct SQLite write, no Chrome needed, instant.
+          2. FALLBACK: Chrome extension - launches Chrome headlessly with a temp extension.
+        Falls back automatically if Python / cookie_sync.py is unavailable.
+    #>
     param(
         [string]$Mode, # 'EXPORT' or 'IMPORT'
         [string]$ProfileName,
@@ -778,18 +873,45 @@ function Invoke-CookieMigration {
 
     Write-Info "Automatic Cookie $Mode for Profile: $ProfileName..."
 
+    # ---- PATH 1: Direct SQLite via cookie_sync.py ----------------------------
+    $directResult = Invoke-CookieMigrationDirect -Mode $Mode -ProfileName $ProfileName -JsonPath $JsonPath
+    if ($null -ne $directResult) {
+        # Python was available and ran (success or failure) — do not fall through to Chrome
+        return $directResult
+    }
+
+    # ---- PATH 2: Chrome extension method (primary for IMPORT on Windows) --------
+    Write-Info "Python not available or IMPORT mode selected. Using Chrome extension method (60s timeout)..."
+
+    # --- Pre-flight: patch profile Preferences to avoid Chrome's crash-restore dialog ---
+    # If Chrome sees exit_type != 'Normal' it shows a restore banner that can block
+    # the service worker from running promptly.
+    $prefPath = Join-Path (Join-Path $Script:ChromeUserData $ProfileName) "Preferences"
+    if (Test-Path $prefPath) {
+        try {
+            $prefJson = Get-Content $prefPath -Raw -Encoding utf8 | ConvertFrom-Json
+            if ($prefJson.profile) {
+                $prefJson.profile | Add-Member -Force -MemberType NoteProperty -Name 'exit_type' -Value 'Normal'
+                $prefJson.profile | Add-Member -Force -MemberType NoteProperty -Name 'exited_cleanly' -Value $true
+            }
+            $prefJson | ConvertTo-Json -Depth 20 -Compress | Set-Content $prefPath -Encoding utf8
+            Write-Info "Patched Preferences to mark clean exit (suppresses restore dialog)."
+        } catch {
+            Write-Info "Could not patch Preferences (non-critical): $_"
+        }
+    }
+
     $extDir = Join-Path $Script:ScriptDir "cookie_migration_ext"
     if (-not (Test-Path $extDir)) {
         New-Item -ItemType Directory -Path $extDir -Force | Out-Null
     }
-    
-    $manifestJson = @'
+     $manifestJson = @'
 {
   "manifest_version": 3,
   "name": "Chrome Cookie Migrator",
   "version": "1.0",
   "permissions": ["cookies"],
-  "host_permissions": ["<all_urls>", "http://localhost:9999/*"],
+  "host_permissions": ["<all_urls>", "http://127.0.0.1:9999/*"],
   "background": {
     "service_worker": "background.js"
   }
@@ -797,83 +919,96 @@ function Invoke-CookieMigration {
 '@
     Set-Content -Path (Join-Path $extDir "manifest.json") -Value $manifestJson -Encoding utf8
     
+    # background.js: uses retry loop (attempts every 2s for up to 50 tries = 100s max)
+    # This is robust against Chrome taking a long time to start or the service worker
+    # being briefly suspended on profile load.
     $backgroundJs = @'
 const PORT = 9999;
-const URL_PREFIX = `http://localhost:${PORT}`;
+const URL_PREFIX = `http://127.0.0.1:${PORT}`;
+const MAX_RETRIES = 50;
+const RETRY_INTERVAL_MS = 2000;
+let retryCount = 0;
+let started = false;
 
 function getCookieUrl(cookie) {
   let domain = cookie.domain;
-  if (domain.startsWith('.')) {
-    domain = domain.substring(1);
-  }
+  if (domain.startsWith('.')) domain = domain.substring(1);
   const protocol = cookie.secure ? 'https://' : 'http://';
-  return protocol + domain + cookie.path;
+  return protocol + domain + (cookie.path || '/');
 }
 
-fetch(`${URL_PREFIX}/mode`)
-  .then(r => r.json())
-  .then(data => {
-    if (data.mode === 'EXPORT') {
-      chrome.cookies.getAll({}, (cookies) => {
-        fetch(`${URL_PREFIX}/export`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(cookies)
-        });
-      });
-    } else if (data.mode === 'IMPORT') {
-      fetch(`${URL_PREFIX}/import`)
-        .then(r => r.json())
-        .then(cookies => {
-          if (!cookies || cookies.length === 0) {
-            fetch(`${URL_PREFIX}/done`, { method: 'POST' });
-            return;
-          }
-          let count = cookies.length;
-          let done = 0;
-          cookies.forEach(cookie => {
-            const details = {
-              url: getCookieUrl(cookie),
-              name: cookie.name,
-              value: cookie.value,
-              path: cookie.path,
-              secure: cookie.secure,
-              httpOnly: cookie.httpOnly,
-              expirationDate: cookie.expirationDate
-            };
-            if (cookie.domain && cookie.domain.startsWith('.')) {
-              details.domain = cookie.domain;
-            }
-            if (cookie.expirationDate && cookie.expirationDate < Date.now() / 1000) {
-              done++;
-              if (done === count) {
-                fetch(`${URL_PREFIX}/done`, { method: 'POST' });
-              }
-              return;
-            }
-            chrome.cookies.set(details, () => {
-              done++;
-              if (done === count) {
-                fetch(`${URL_PREFIX}/done`, { method: 'POST' });
-              }
-            });
-          });
-        })
-        .catch(err => {
-          fetch(`${URL_PREFIX}/done`, { method: 'POST' });
-        });
+function doImport(cookies) {
+  if (!cookies || cookies.length === 0) {
+    fetch(`${URL_PREFIX}/done`, { method: 'POST' }).catch(() => {});
+    return;
+  }
+  let count = cookies.length;
+  let done = 0;
+  const finish = () => { done++; if (done === count) fetch(`${URL_PREFIX}/done`, { method: 'POST' }).catch(() => {}); };
+  cookies.forEach(cookie => {
+    if (cookie.expirationDate && cookie.expirationDate < Date.now() / 1000) { finish(); return; }
+    const details = {
+      url: getCookieUrl(cookie),
+      name: cookie.name,
+      value: cookie.value,
+      path: cookie.path || '/',
+      secure: cookie.secure,
+      httpOnly: cookie.httpOnly
+    };
+    if (cookie.expirationDate) details.expirationDate = cookie.expirationDate;
+    if (cookie.sameSite && cookie.sameSite !== 'unspecified') {
+      details.sameSite = cookie.sameSite;
+      if (cookie.sameSite === 'no_restriction') details.secure = true;
     }
-  })
-  .catch(err => {
-    setTimeout(() => {
-      location.reload();
-    }, 1000);
+    if (cookie.domain && cookie.domain.startsWith('.')) details.domain = cookie.domain;
+    chrome.cookies.set(details, () => finish());
   });
+}
+
+function run() {
+  fetch(`${URL_PREFIX}/mode`)
+    .then(r => r.json())
+    .then(data => {
+      if (data.mode === 'EXPORT') {
+        chrome.cookies.getAll({}, cookies => {
+          fetch(`${URL_PREFIX}/export`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(cookies)
+          }).catch(() => {});
+        });
+      } else if (data.mode === 'IMPORT') {
+        fetch(`${URL_PREFIX}/import`)
+          .then(r => r.json())
+          .then(cookies => doImport(cookies))
+          .catch(() => fetch(`${URL_PREFIX}/done`, { method: 'POST' }).catch(() => {}));
+      }
+    })
+    .catch(() => {
+      // Server not ready yet - retry
+      if (retryCount++ < MAX_RETRIES) {
+        setTimeout(run, RETRY_INTERVAL_MS);
+      }
+    });
+}
+
+function startSync() {
+  if (started) return;
+  started = true;
+  run();
+}
+
+// Register event listeners to keep the service worker active in Manifest V3
+chrome.runtime.onInstalled.addListener(startSync);
+chrome.runtime.onStartup.addListener(startSync);
+
+// Fallback direct invocation with delay
+setTimeout(startSync, 500);
 '@
     Set-Content -Path (Join-Path $extDir "background.js") -Value $backgroundJs -Encoding utf8
 
     $listener = [System.Net.HttpListener]::new()
-    $listener.Prefixes.Add('http://localhost:9999/')
+    $listener.Prefixes.Add('http://127.0.0.1:9999/')
     try {
         $listener.Start()
     } catch {
@@ -900,15 +1035,28 @@ fetch(`${URL_PREFIX}/mode`)
         ("--profile-directory=`"" + $ProfileName + "`""),
         "--disable-gpu",
         "--no-first-run",
-        "--no-default-browser-check"
+        "--no-default-browser-check",
+        "--no-default-browser-check",
+        "--disable-background-networking",
+        "--disable-sync",
+        "--disable-translate",
+        "--disable-extensions-except=`"$extDir`"",
+        "--restore-last-session",
+        "--disable-popup-blocking",
+        "--hide-crash-restore-bubble",
+        "about:blank"
     )
     $proc = Start-Process -FilePath $chromeExe -ArgumentList $argList -PassThru
 
     $syncSuccess = $false
-    $timeoutSec = 15
+    $timeoutSec = 60  # Increased from 15s: Chrome may take time to start on a fresh/restored profile
     $start = Get-Date
 
     while (((Get-Date) - $start).TotalSeconds -lt $timeoutSec -and -not $syncSuccess) {
+        if ($proc -and $proc.HasExited) {
+            Write-Info "Chrome exited early during cookie migration."
+            break
+        }
         if (-not $listener.IsListening) { break }
         
         $contextTask = $listener.GetContextAsync()
@@ -999,8 +1147,11 @@ function Start-FullBackup {
         }
     }
 
-    $syncCookies = Read-Host "  Do you want to automatically backup your login sessions (cookies) for selected profile(s)? (YES/NO)"
-    if ($syncCookies.Trim().ToUpper() -eq "YES") {
+    $autoPrompt = Read-Host "  Auto-accept all subsequent prompts (cookies, confirms)? (YES/NO) [Default: YES]"
+    $Script:AutoAcceptAll = ($null -eq $autoPrompt -or $autoPrompt.Trim() -eq "" -or $autoPrompt.Trim().ToUpper() -in @("Y", "YES"))
+
+    $syncCookies = Get-Response "Do you want to automatically backup your login sessions (cookies) for selected profile(s)? (YES/NO)"
+    if ($syncCookies -eq "YES") {
         $cookieBackupDir = Join-Path $Script:BackupDir "cookies"
         if (-not (Test-Path $cookieBackupDir)) { New-Item -ItemType Directory -Path $cookieBackupDir -Force | Out-Null }
         
@@ -1073,8 +1224,11 @@ function Start-SessionBackup {
         }
     }
 
-    $syncCookies = Read-Host "  Do you want to automatically backup your login sessions (cookies) for selected profile(s)? (YES/NO)"
-    if ($syncCookies.Trim().ToUpper() -eq "YES") {
+    $autoPrompt = Read-Host "  Auto-accept all subsequent prompts (cookies, confirms)? (YES/NO) [Default: YES]"
+    $Script:AutoAcceptAll = ($null -eq $autoPrompt -or $autoPrompt.Trim() -eq "" -or $autoPrompt.Trim().ToUpper() -in @("Y", "YES"))
+
+    $syncCookies = Get-Response "Do you want to automatically backup your login sessions (cookies) for selected profile(s)? (YES/NO)"
+    if ($syncCookies -eq "YES") {
         $cookieBackupDir = Join-Path $Script:BackupDir "cookies"
         if (-not (Test-Path $cookieBackupDir)) { New-Item -ItemType Directory -Path $cookieBackupDir -Force | Out-Null }
         
@@ -1169,6 +1323,9 @@ function Start-FullRestore {
         Write-Info "Restoring all profiles."
     }
 
+    $autoPrompt = Read-Host "  Auto-accept all subsequent prompts (cookies, confirms)? (YES/NO) [Default: YES]"
+    $Script:AutoAcceptAll = ($null -eq $autoPrompt -or $autoPrompt.Trim() -eq "" -or $autoPrompt.Trim().ToUpper() -in @("Y", "YES"))
+
     Write-Host ""
     Write-Color "  +-------------------------------------------------------------+" Cyan
     Write-Color "  |  PORTABILITY & RESTORE PREVIEW                              |" Cyan
@@ -1178,8 +1335,13 @@ function Start-FullRestore {
     Write-Color "  +-------------------------------------------------------------+" Cyan
     Write-Host ""
 
-    $confirm = Read-Host "  Type YES to confirm restore"
-    if ($confirm.Trim().ToUpper() -ne "YES") {
+    # Cross-OS warning
+    $backupOS = Get-BackupOS -ZipPath $zipPath
+    $proceed  = Show-CrossOsWarning -BackupOS $backupOS
+    if (-not $proceed) { return $false }
+
+    $confirm = Get-Response "Type YES to confirm restore"
+    if ($confirm -ne "YES") {
         Write-Warn "Restore cancelled by user."
         return $false
     }
@@ -1220,8 +1382,8 @@ function Start-FullRestore {
             
             if ($matchedCookies.Count -gt 0) {
                 Write-Host ""
-                $importCookies = Read-Host "  Found backed up login sessions (cookies) for selected profile(s). Do you want to automatically import them? (YES/NO)"
-                if ($importCookies.Trim().ToUpper() -eq "YES") {
+                $importCookies = Get-Response "Found backed up login sessions (cookies) for selected profile(s). Do you want to automatically import them? (YES/NO)"
+                if ($importCookies -eq "YES") {
                     Stop-Chrome
                     foreach ($cf in $matchedCookies) {
                         $p = $cf.BaseName.Replace("cookies_", "")
@@ -1234,6 +1396,49 @@ function Start-FullRestore {
 
     Write-OK "Full restore complete! Start Chrome to verify."
     Write-Log "Full restore complete"
+    return $true
+}
+
+function Get-BackupOS {
+    param([string]$ZipPath)
+    $name = (Split-Path $ZipPath -Leaf).ToLower()
+    if ($name -match 'ubuntu|linux')  { return 'Linux'   }
+    if ($name -match 'windows|win')   { return 'Windows' }
+    if ($name -match 'mac|darwin')    { return 'macOS'   }
+    return 'Unknown'
+}
+
+function Show-CrossOsWarning {
+    param([string]$BackupOS)
+    $currentOS = 'Windows'
+    if ($BackupOS -ne 'Unknown' -and $BackupOS -ne $currentOS) {
+        Write-Host ""
+        Write-Color "  +-------------------------------------------------------------+" Red
+        Write-Color "  |  [X] CROSS-OS RESTORE WARNING                               |" Red
+        Write-Color "  +-------------------------------------------------------------+" Red
+        Write-Color "  |                                                             |" Red
+        Write-Color "  |  This backup was created on $BackupOS.                       " Red
+        Write-Color "  |  You are restoring to Windows.                             |" Red
+        Write-Color "  |                                                             |" Red
+        Write-Color "  |  WHAT WILL WORK:                                            |" Green
+        Write-Color "  |    [OK] MetaMask vault & extensions                        |" Green
+        Write-Color "  |    [OK] Bookmarks, history, settings                       |" Green
+        Write-Color "  |    [OK] Local Storage / IndexedDB                          |" Green
+        Write-Color "  |                                                             |" Red
+        Write-Color "  |  WHAT WILL NOT WORK:                                        |" Red
+        Write-Color "  |    [X]  Login sessions / cookies  <-- YOU WILL BE LOGGED  |" Red
+        Write-Color "  |         OUT of ALL websites. This cannot be fixed.         |" Red
+        Write-Color "  |    [X]  Saved passwords (DPAPI-encrypted, OS-specific)     |" Red
+        Write-Color "  |                                                             |" Red
+        Write-Color "  |  RECOMMENDATION: Use the Windows backup instead.            |" Yellow
+        Write-Color "  +-------------------------------------------------------------+" Red
+        Write-Host ""
+        $ack = Read-Host "  Type UNDERSTAND to proceed anyway, or press Enter to cancel"
+        if ($ack.Trim().ToUpper() -ne 'UNDERSTAND') {
+            Write-Warn "Restore cancelled. Use a Windows backup to keep your login sessions."
+            return $false
+        }
+    }
     return $true
 }
 
@@ -1264,6 +1469,9 @@ function Start-SessionRestore {
         Write-Info "Restoring all profiles."
     }
 
+    $autoPrompt = Read-Host "  Auto-accept all subsequent prompts (cookies, confirms)? (YES/NO) [Default: YES]"
+    $Script:AutoAcceptAll = ($null -eq $autoPrompt -or $autoPrompt.Trim() -eq "" -or $autoPrompt.Trim().ToUpper() -in @("Y", "YES"))
+
     Write-Host ""
     Write-Color "  +-------------------------------------------------------------+" Cyan
     Write-Color "  |  PORTABILITY & RESTORE PREVIEW                              |" Cyan
@@ -1272,8 +1480,13 @@ function Start-SessionRestore {
     Write-Color "  +-------------------------------------------------------------+" Cyan
     Write-Host ""
 
-    $confirm = Read-Host "  Type YES to confirm restore"
-    if ($confirm.Trim().ToUpper() -ne "YES") {
+    # Cross-OS warning
+    $backupOS = Get-BackupOS -ZipPath $zipPath
+    $proceed  = Show-CrossOsWarning -BackupOS $backupOS
+    if (-not $proceed) { return $false }
+
+    $confirm = Get-Response "Type YES to confirm restore"
+    if ($confirm -ne "YES") {
         Write-Warn "Restore cancelled by user."
         return $false
     }
@@ -1321,8 +1534,8 @@ function Start-SessionRestore {
             
             if ($matchedCookies.Count -gt 0) {
                 Write-Host ""
-                $importCookies = Read-Host "  Found backed up login sessions (cookies) for selected profile(s). Do you want to automatically import them? (YES/NO)"
-                if ($importCookies.Trim().ToUpper() -eq "YES") {
+                $importCookies = Get-Response "Found backed up login sessions (cookies) for selected profile(s). Do you want to automatically import them? (YES/NO)"
+                if ($importCookies -eq "YES") {
                     Stop-Chrome
                     foreach ($cf in $matchedCookies) {
                         $p = $cf.BaseName.Replace("cookies_", "")

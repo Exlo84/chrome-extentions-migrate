@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chrome Cookie Migrator</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo-area">
+        <svg class="logo-icon" viewBox="0 0 24 24" width="24" height="24">
+          <path fill="currentColor" d="M12 2A10 10 0 1 0 22 12A10 10 0 0 0 12 2M12 20A8 8 0 1 1 20 12A8 8 0 0 1 12 20M12 6A1.5 1.5 0 1 0 13.5 7.5A1.5 1.5 0 0 0 12 6M16.5 10.5A1.5 1.5 0 1 0 18 12A1.5 1.5 0 0 0 16.5 10.5M7.5 10.5A1.5 1.5 0 1 0 9 12A1.5 1.5 0 0 0 7.5 10.5M12 15A1.5 1.5 0 1 0 13.5 16.5A1.5 1.5 0 0 0 12 15Z"/>
+        </svg>
+        <h1>Cookie Migrator</h1>
+      </div>
+      <div class="version">v1.0</div>
+    </header>
+
+    <!-- Tabs Navigation -->
+    <nav class="tab-navigation">
+      <button class="tab-btn active" id="tab-export">Export</button>
+      <button class="tab-btn" id="tab-import">Import</button>
+    </nav>
+
+    <!-- Tab Contents -->
+    <main class="tab-content-area">
+      
+      <!-- Export Tab -->
+      <section class="tab-pane active" id="pane-export">
+        <div class="info-card">
+          <p>Retrieve active session cookies from this browser profile. You can filter by domain or download all cookies as a backup JSON file.</p>
+        </div>
+
+        <div class="search-box">
+          <input type="text" id="export-search" placeholder="Filter by domain (e.g. google.com)..." autocomplete="off">
+        </div>
+
+        <div class="stats-row">
+          <div class="stat-box">
+            <span class="stat-num" id="export-total-count">0</span>
+            <span class="stat-label">Total Cookies</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-num" id="export-filtered-count">0</span>
+            <span class="stat-label">Matching Cookies</span>
+          </div>
+        </div>
+
+        <div class="action-section">
+          <button class="btn btn-primary btn-full" id="btn-export-download">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M5 20H19V18H5M19 9H15V3H9V9H5L12 16L19 9Z"/></svg>
+            Download Cookies JSON
+          </button>
+        </div>
+      </section>
+
+      <!-- Import Tab -->
+      <section class="tab-pane" id="pane-import">
+        <div class="info-card">
+          <p>Import a session cookie JSON file (e.g. from your Windows/Ubuntu backup folder). This will restore active login sessions in this profile.</p>
+        </div>
+
+        <div class="file-drop-zone" id="drop-zone">
+          <svg class="drop-icon" viewBox="0 0 24 24" width="48" height="48">
+            <path fill="currentColor" d="M19.35 10.04C18.67 6.59 15.64 4 12 4C9.11 4 6.6 5.64 5.35 8.04C2.34 8.36 0 10.91 0 14C0 17.31 2.69 20 6 20H19C21.76 20 24 17.76 24 15C24 12.36 21.95 10.22 19.35 10.04M19 18H6C3.79 18 2 16.21 2 14C2 11.95 3.53 10.24 5.56 10.03L6.63 9.92L7.13 8.97C8.08 7.14 9.94 6 12 6C14.62 6 16.88 7.86 17.39 10.43L17.69 11.93L19.22 12.04C20.78 12.14 22 13.43 22 15C22 16.65 20.65 18 19 18M8 13H11V17H13V13H16L12 9L8 13Z"/>
+          </svg>
+          <span class="drop-text">Drag & drop your cookies JSON file here</span>
+          <span class="drop-or">or</span>
+          <button class="btn btn-secondary" id="btn-select-file">Browse File</button>
+          <input type="file" id="file-input" accept=".json" style="display: none;">
+        </div>
+
+        <div class="preview-card" id="import-preview" style="display: none;">
+          <h3>File Details</h3>
+          <div class="preview-grid">
+            <div class="preview-item"><span class="lbl">Filename:</span> <span class="val" id="preview-filename">-</span></div>
+            <div class="preview-item"><span class="lbl">Size:</span> <span class="val" id="preview-size">-</span></div>
+            <div class="preview-item"><span class="lbl">Cookies Count:</span> <span class="val" id="preview-count">-</span></div>
+            <div class="preview-item"><span class="lbl">Unique Domains:</span> <span class="val" id="preview-domains">-</span></div>
+          </div>
+          <div class="preview-actions">
+            <button class="btn btn-primary" id="btn-import-confirm">
+              <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z"/></svg>
+              Confirm Import
+            </button>
+            <button class="btn btn-danger-outline" id="btn-import-cancel">Cancel</button>
+          </div>
+        </div>
+
+        <!-- Progress Overlay / State -->
+        <div class="progress-container" id="import-progress-area" style="display: none;">
+          <div class="progress-title">Importing Cookies...</div>
+          <div class="progress-bar-bg">
+            <div class="progress-bar-fill" id="progress-bar-fill"></div>
+          </div>
+          <div class="progress-stats">
+            <span id="progress-text">0 / 0</span>
+            <span id="progress-percent">0%</span>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- Footer Status Banner -->
+    <footer class="app-status" id="status-banner">
+      <span class="status-dot"></span>
+      <span class="status-msg" id="status-msg">Extension Loaded and Ready</span>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Chrome Cookie Migrator",
+  "version": "1.0",
+  "description": "Manually export and import cookies as JSON to backup and restore active sessions.",
+  "permissions": [
+    "cookies"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": "icon.svg"
+  },
+  "icons": {
+    "128": "icon.svg"
+  }
+}
