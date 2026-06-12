@@ -261,42 +261,37 @@ select_profiles() {
 
 get_profiles_in_zip() {
     local zip_file="$1"
-    local tmp_extract=$(mktemp -d)
-    
-    # Extract only the Preferences files inside zip to get emails/names
-    local pref_entries=$(unzip -l "$zip_file" 2>/dev/null | grep "/Preferences$" | awk '{print $4}')
-    
-    for entry in $pref_entries; do
-        unzip -p "$zip_file" "$entry" > "$tmp_extract/$(basename "$(dirname "$entry")")_Preferences" 2>/dev/null
-    done
-    
     python3 -c '
-import os, json, sys
-tmp_dir = sys.argv[1]
+import sys, os, json, zipfile
+zip_path = sys.argv[1]
 profiles = []
-if os.path.exists(tmp_dir):
-    for f_name in os.listdir(tmp_dir):
-        if f_name.endswith("_Preferences"):
-            folder = f_name.replace("_Preferences", "")
-            pref_path = os.path.join(tmp_dir, f_name)
-            email = ""
-            name = ""
-            try:
-                with open(pref_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    email = data.get("account_info", [{}])[0].get("email", "")
-                    if not email:
-                        email = data.get("google", {}).get("services", {}).get("username", "")
-                    if not email:
-                        email = data.get("google", {}).get("services", {}).get("signin", {}).get("username", "")
-                    name = data.get("profile", {}).get("name", "")
-            except:
-                pass
-            profiles.append((folder, email, name))
-for p in sorted(profiles, key=lambda x: 0 if x[0] == "Default" else int(x[0].split()[1]) if len(x[0].split()) > 1 else 999):
+try:
+    with zipfile.ZipFile(zip_path, "r") as z:
+        for name in z.namelist():
+            if name.endswith("/Preferences"):
+                # Get the folder name (parent directory of Preferences)
+                folder = os.path.basename(os.path.dirname(name))
+                if not folder:
+                    continue
+                # Read the Preferences file content directly from the zip in memory
+                try:
+                    with z.open(name) as f:
+                        data = json.loads(f.read().decode("utf-8", errors="ignore"))
+                        email = data.get("account_info", [{}])[0].get("email", "")
+                        if not email:
+                            email = data.get("google", {}).get("services", {}).get("username", "")
+                        if not email:
+                            email = data.get("google", {}).get("services", {}).get("signin", {}).get("username", "")
+                        friendly_name = data.get("profile", {}).get("name", "")
+                        profiles.append((folder, email, friendly_name))
+                except Exception:
+                    profiles.append((folder, "", ""))
+except Exception:
+    pass
+
+for p in sorted(profiles, key=lambda x: 0 if x[0] == "Default" else int(x[0].split()[1]) if len(x[0].split()) > 1 and x[0].split()[1].isdigit() else 999):
     print(f"{p[0]}|{p[1]}|{p[2]}")
-' "$tmp_extract" 2>/dev/null
-    rm -rf "$tmp_extract"
+' "$zip_file"
 }
 
 select_restore_profiles() {
